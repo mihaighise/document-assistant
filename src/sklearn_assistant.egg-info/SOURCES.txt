@@ -1,9 +1,0 @@
-README.md
-pyproject.toml
-src/sklearn_assistant/__init__.py
-src/sklearn_assistant.egg-info/PKG-INFO
-src/sklearn_assistant.egg-info/SOURCES.txt
-src/sklearn_assistant.egg-info/dependency_links.txt
-src/sklearn_assistant.egg-info/requires.txt
-src/sklearn_assistant.egg-info/top_level.txt
-src/sklearn_assistant/ingest/__init__.py
