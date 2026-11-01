@@ -45,22 +45,34 @@ Downloads the official offline HTML docs and writes section-level chunks to
   - Glossary: one chunk per term (`fit_transform`).
   - Code blocks are kept verbatim inside ``` fences.
   - Gallery script output is truncated (some examples print pages of warnings).
-  - Sections over ~1500 tokens are split on paragraph boundaries; near-empty sections
-    (headings, link lists) are dropped.
+  - Fitted-estimator widgets in gallery output are replaced by their one-line text repr
+    (the widgets embed parameter tables and docstring tooltips that duplicate the API pages).
+  - Sections over 1400 characters are split on paragraph boundaries, to fit the embedding
+    model's 512-token limit (see step 2); near-empty sections (headings, link lists) are dropped.
 - **Excluded pages:** release notes, developer/contributor guides, team and governance pages,
   install instructions — they're about the project, not about using the library.
 
-**Result:** 5,374 chunks — 3,041 API, 1,458 gallery examples, 681 user guide, 194 glossary.
-Median chunk ~870 characters, max 6,194.
+**Result:** 7,873 chunks — 4,355 API, 1,979 gallery examples, 1,325 user guide, 214 glossary.
+Median chunk ~900 characters (~255 tokens), max 1,631.
 
-### 2. Hybrid retrieval (planned)
+### 2. Hybrid retrieval
 
 ```bash
 .venv/bin/python scripts/build_index.py
 ```
 
-Builds a dense index (embeddings in Chroma) and a lexical index (BM25) over the same chunks,
-and merges their results at query time.
+Embeds the chunks into Chroma (~90 s on an M-series Mac) and prints results for a few sample
+questions. The BM25 index is rebuilt in memory when the retriever loads (a few seconds), so
+only the vector index is persisted. From code:
+
+```python
+from sklearn_assistant.retrieval.hybrid import retrieve
+
+for r in retrieve("difference between fit_transform and transform", k=5):
+    print(r.chunk["title"], r.chunk["url"], r.dense_rank, r.bm25_rank)
+```
+
+`mode="dense"` or `mode="bm25"` runs a single retriever, for comparison in step 3.
 
 ```mermaid
 flowchart LR
@@ -97,15 +109,16 @@ flowchart LR
   (`fit_transform` → `fit_transform`, `fit`, `transform`), so both exact and partial matches score.
 - **Reciprocal Rank Fusion.** Uses only ranks, so BM25 scores and cosine similarities never
   need to be put on the same scale.
-- **Chunk length vs. model limit.** BGE truncates input at 512 tokens, so the chunker's split
-  threshold drops from ~1500 to ~450 tokens to keep every chunk fully embedded.
+- **Chunk length vs. model limit.** BGE truncates input at 512 tokens. With the original
+  ~1500-token sections, 28% of chunks were cut off; splitting at 1400 characters brings that
+  to 2.3% (dense LaTeX and numpy code), which BM25 still indexes in full.
 - **Plain libraries behind one `retrieve(query, k)` function.** Step 3's evaluation gets
   full control over retrieval; step 4 wraps it as a LangChain retriever.
 
 ## Roadmap
 
 - [x] 1. Ingest + section-based chunking
-- [ ] 2. Embeddings + Chroma, BM25 + hybrid retrieval
+- [x] 2. Embeddings + Chroma, BM25 + hybrid retrieval
 - [ ] 3. Evaluation set (~75 questions) + recall@5 / MRR, tracked in MLflow
 - [ ] 4. LangGraph agent: classify → retrieve → grade/rewrite → answer (+ code sandbox)
 - [ ] 5. Question classifier: TF-IDF + LR vs. fine-tuned BERT vs. LLM
@@ -124,10 +137,10 @@ src/sklearn_assistant/
   config.py            paths, docs URL, citation base URL
   ingest/download.py   fetch + unzip the offline docs
   ingest/chunker.py    HTML -> section-level chunks
-  retrieval/dense.py   embed chunks -> Chroma; query            (planned)
-  retrieval/bm25.py    code-aware tokenizer + BM25 index        (planned)
-  retrieval/hybrid.py  RRF fusion -> ranked chunks              (planned)
+  retrieval/dense.py   embed chunks -> Chroma; query
+  retrieval/bm25.py    code-aware tokenizer + BM25 index
+  retrieval/hybrid.py  RRF fusion -> ranked chunks
 scripts/ingest.py      step 1 entry point
-scripts/build_index.py step 2 entry point                       (planned)
+scripts/build_index.py step 2 entry point
 tests/                 pytest suite
 ```

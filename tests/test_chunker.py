@@ -45,3 +45,15 @@ def test_project_pages_are_excluded():
     assert is_included("modules/ensemble.html")
     assert not is_included("whats_new/v1.5.html")
     assert not is_included("developers/contributing.html")
+
+
+def test_estimator_widgets_keep_only_text_repr():
+    html = f"""<article class="bd-article"><section id="ex"><h1>Example</h1><p>{LONG}</p>
+      <div class="sk-top-container"><div class="sk-text-repr-fallback">
+        <pre>GridSearchCV(estimator=SVC())</pre><b>In a Jupyter environment...</b></div>
+        <div class="sk-container"><table class="parameters-table">
+          <tr><td>best_params_: dict</td></tr></table></div></div>
+      </section></article>"""
+    text = chunk_page(html, "auto_examples/plot_x.html")[0].text
+    assert "```python\nGridSearchCV(estimator=SVC())\n```" in text
+    assert "best_params_" not in text and "Jupyter" not in text
