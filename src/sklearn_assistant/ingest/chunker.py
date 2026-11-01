@@ -36,7 +36,9 @@ NOISE_SELECTORS = (
 BLOCK_TAGS = ("p", "li", "dt", "dd", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "div",
               "blockquote", "table", "ul", "ol", "dl")
 
-MAX_CHARS = 6000   # ~1500 tokens; longer sections get split on paragraph boundaries
+# Longer sections get split on paragraph boundaries. Sized for the embedding model's
+# 512-token limit: dense code can be as low as ~2.8 chars/token.
+MAX_CHARS = 1400
 MIN_CHARS = 80     # sections with less body text than this are just headings/link lists
 MAX_OUTPUT_CHARS = 1000  # gallery script output can be pages of repeated warnings
 
@@ -165,6 +167,14 @@ def chunk_page(html: str, rel_path: str) -> list[Chunk]:
     for sel in NOISE_SELECTORS:
         for el in article.select(sel):
             el.decompose()
+    # Fitted-estimator widgets in gallery output embed parameter tables and docstring
+    # tooltips (duplicating the API pages); keep only their plain-text repr.
+    for widget in article.select("div.sk-top-container"):
+        fallback = widget.select_one("div.sk-text-repr-fallback pre")
+        if fallback:
+            widget.replace_with(fallback.extract())
+        else:
+            widget.decompose()
 
     page_url = DOCS_BASE_URL + rel_path
     doc_type = doc_type_for(rel_path)

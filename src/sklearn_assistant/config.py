@@ -15,3 +15,7 @@ DOCS_ZIP_URL = "https://scikit-learn.org/stable/_downloads/scikit-learn-docs.zip
 # Citations point at the version-pinned site so links keep matching the indexed text.
 DOCS_VERSION = "1.9"
 DOCS_BASE_URL = f"https://scikit-learn.org/{DOCS_VERSION}/"
+
+# Step 2: retrieval indexes.
+CHROMA_DIR = DATA_DIR / "chroma"       # persistent vector store
+EMBED_MODEL = "BAAI/bge-small-en-v1.5"  # 512-token input limit; chunker.MAX_CHARS is sized for it
