@@ -19,3 +19,7 @@ DOCS_BASE_URL = f"https://scikit-learn.org/{DOCS_VERSION}/"
 # Step 2: retrieval indexes.
 CHROMA_DIR = DATA_DIR / "chroma"       # persistent vector store
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"  # 512-token input limit; chunker.MAX_CHARS is sized for it
+
+# Step 3: evaluation.
+EVAL_QUESTIONS_PATH = ROOT / "eval" / "retrieval_questions.jsonl"  # hand-labeled, committed
+MLFLOW_TRACKING_URI = f"sqlite:///{ROOT / 'mlflow.db'}"

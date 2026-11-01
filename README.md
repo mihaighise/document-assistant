@@ -115,11 +115,57 @@ flowchart LR
 - **Plain libraries behind one `retrieve(query, k)` function.** Step 3's evaluation gets
   full control over retrieval; step 4 wraps it as a LangChain retriever.
 
+### 3. Retrieval evaluation
+
+```bash
+.venv/bin/python scripts/eval_retrieval.py      # scores dense, bm25 and hybrid
+.venv/bin/mlflow ui --backend-store-uri sqlite:///mlflow.db
+```
+
+Runs every question in `eval/retrieval_questions.jsonl` through each retriever mode and logs
+one MLflow run per mode (experiment `retrieval`): the metrics, overall and per category; the
+config (embedding model, chunk size, RRF settings, eval-set hash, git commit); and a
+`per_question.json` artifact with what each question retrieved, for digging into failures.
+
+**The eval set:** 81 hand-written questions, each labeled with the 1–3 doc sections a good
+answer would cite. They mix exact-identifier questions (*"What does `warm_start=True` do?"*)
+with paraphrases that never name the class (*"How do I make sure samples from the same patient
+don't end up in both the training and test folds?"*), across five categories: howto (49),
+concept (15), comparison (8), api (5), troubleshooting (4).
+
+**Metrics:** recall@5 (share of a question's gold sections in the top 5) is the headline
+number. MRR (1 / rank of the first gold result, within the top 10), hit@5 and recall@10 add
+context.
+
+**Design decisions**
+
+- **Labels are section URLs, not chunk ids.** Chunk ids change whenever the chunker does; URLs
+  don't, so the set stays valid across steps. Any part of a split section counts as a hit, and
+  the script refuses to run if a labeled URL is missing from the index.
+- **Gold sections were picked by browsing the corpus, not from retriever output**, so the
+  labels don't favor whichever retriever existed when they were written.
+- **Strict labels.** Only the sections that directly answer a question are gold. Related
+  gallery examples count as misses, so absolute scores are conservative; comparisons between
+  runs are what matter.
+
+**Baseline (81 questions)**
+
+| mode | recall@5 | recall@10 | hit@5 | MRR |
+|---|---|---|---|---|
+| dense | **0.601** | **0.718** | **0.802** | 0.542 |
+| bm25 | 0.430 | 0.564 | 0.617 | 0.416 |
+| hybrid (RRF) | 0.553 | 0.642 | 0.765 | **0.559** |
+
+Hybrid does *not* beat dense on recall: it is worse on 11 questions and better on 6. BM25's
+misses are mostly near-relevant gallery examples that repeat the query's keywords (`plot_roc`,
+`plot_lasso_*`), and equal-weight RRF lets them push correct dense results out of the top 5.
+Weighting the fusion, and the cross-encoder reranker in step 6, are the obvious next levers.
+
 ## Roadmap
 
 - [x] 1. Ingest + section-based chunking
 - [x] 2. Embeddings + Chroma, BM25 + hybrid retrieval
-- [ ] 3. Evaluation set (~75 questions) + recall@5 / MRR, tracked in MLflow
+- [x] 3. Evaluation set (81 questions) + recall@5 / MRR, tracked in MLflow
 - [ ] 4. LangGraph agent: classify → retrieve → grade/rewrite → answer (+ code sandbox)
 - [ ] 5. Question classifier: TF-IDF + LR vs. fine-tuned BERT vs. LLM
 - [ ] 6. Fine-tuned embeddings + cross-encoder reranker
@@ -140,7 +186,10 @@ src/sklearn_assistant/
   retrieval/dense.py   embed chunks -> Chroma; query
   retrieval/bm25.py    code-aware tokenizer + BM25 index
   retrieval/hybrid.py  RRF fusion -> ranked chunks
+  evaluation/retrieval.py  eval set loading, recall@k / MRR scoring
 scripts/ingest.py      step 1 entry point
 scripts/build_index.py step 2 entry point
+scripts/eval_retrieval.py  step 3 entry point (logs to MLflow)
+eval/retrieval_questions.jsonl  hand-labeled retrieval eval set
 tests/                 pytest suite
 ```
