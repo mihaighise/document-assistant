@@ -121,7 +121,12 @@ def split_long(body: str) -> list[str]:
     if len(body) <= MAX_CHARS:
         return [body]
     parts, current = [], ""
+    # element_to_text separates paragraphs with a blank line, so "\n\n" is a paragraph
+    # boundary. Code blocks contain no blank-line placeholders, so they stay whole.
     for para in body.split("\n\n"):
+        # Close the current piece when adding this paragraph would overflow it. The
+        # `current and` guard keeps an oversized first paragraph from producing an
+        # empty piece; it is cut up by the hard split below instead.
         if current and len(current) + len(para) > MAX_CHARS:
             parts.append(current)
             current = ""
@@ -149,6 +154,8 @@ def make_chunks(title: str, body: str, url: str, rel_path: str, doc_type: str) -
         return []
     parts = split_long(body)
     chunks = []
+    # Every part of a split section shares the section's URL (that's what citations and
+    # the eval labels use); "(part i/n)" in the title tells them apart when reading.
     for i, part in enumerate(parts):
         part_title = title if len(parts) == 1 else f"{title} (part {i + 1}/{len(parts)})"
         chunk_id = hashlib.sha1(f"{url}|{i}".encode()).hexdigest()[:16]
@@ -178,12 +185,19 @@ def chunk_page(html: str, rel_path: str) -> list[Chunk]:
 
     page_url = DOCS_BASE_URL + rel_path
     doc_type = doc_type_for(rel_path)
+    # The first section's heading is the page title (e.g. "GridSearchCV"); method and
+    # glossary chunks use it as the start of their breadcrumb.
     page_title = heading_text(article.find("section")) if article.find("section") else ""
     chunks: list[Chunk] = []
+
+    # The special cases run first and remove their elements from the tree (decompose),
+    # so the generic section walk at the end doesn't chunk the same text a second time.
 
     # API methods: pull each out of the tree so the class chunk stays focused.
     for method in article.select("dl.py.method"):
         dt = method.find("dt")
+        # Sphinx gives each method's <dt> the full dotted path as its id, e.g.
+        # "sklearn.model_selection.GridSearchCV.fit"; the last component is the method name.
         anchor = dt.get("id", "") if dt else ""
         name = anchor.rsplit(".", 1)[-1] if anchor else "method"
         title = f"{page_title} > {name}"
@@ -193,6 +207,8 @@ def chunk_page(html: str, rel_path: str) -> list[Chunk]:
 
     # Glossary: one chunk per term.
     for glossary in article.select("dl.glossary"):
+        # A definition list alternates <dt> (term) and <dd> (definition); recursive=False
+        # skips <dt>s nested inside definitions.
         for dt in glossary.find_all("dt", recursive=False):
             dd = dt.find_next_sibling("dd")
             term = dt.get_text(" ", strip=True)
@@ -214,11 +230,17 @@ def chunk_page(html: str, rel_path: str) -> list[Chunk]:
             heading.decompose()
         body = element_to_text(section)
         url = f"{page_url}#{section['id']}" if section.get("id") else page_url
+        # Empty crumbs (sections without a heading) are skipped so titles never contain
+        # "A >  > B".
         chunks.extend(make_chunks(" > ".join(c for c in crumbs if c), body, url,
                                   rel_path, doc_type))
+        # The subsections were detached above but are still Tag objects, so they can be
+        # walked on their own, each inheriting this section's breadcrumb.
         for sub in subsections:
             walk(sub, crumbs)
 
+    # Usually a single top-level section per page (the page title); its subsections
+    # are reached through the recursion.
     for top in article.find_all("section", recursive=False):
         walk(top, [])
     return chunks
@@ -227,7 +249,10 @@ def chunk_page(html: str, rel_path: str) -> list[Chunk]:
 def chunk_docs(docs_dir: Path) -> list[Chunk]:
     """Chunk every included HTML page under `docs_dir`, in a deterministic order."""
     chunks: list[Chunk] = []
+    # sorted() makes the output order the same on every machine (rglob order depends on
+    # the filesystem), so chunks.jsonl diffs cleanly between runs.
     for path in sorted(docs_dir.rglob("*.html")):
+        # as_posix() keeps "/" separators on every OS, since this path ends up in URLs.
         rel_path = path.relative_to(docs_dir).as_posix()
         if is_included(rel_path):
             chunks += chunk_page(path.read_text(encoding="utf-8"), rel_path)
