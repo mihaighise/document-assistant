@@ -259,6 +259,44 @@ picked by 5-fold cross-validation on macro-F1.
 - Small classes (5 api, 4 troubleshooting test questions) make their F1 noisy: one question
   moves it by ~0.1–0.2.
 
+**Next: the LLM and BERT rows**
+
+- **LLM**: score the agent's existing `classify` call (no training) on the same 105 questions
+  with the same `evaluate()`. `ClaudeLLM` will count the tokens each call uses, so the run
+  logs real cost per 1k questions instead of an estimate. Questions go one at a time, as in
+  the agent, so latency is realistic.
+- **Fine-tuned DistilBERT** (66M parameters): trained on the same generated questions. On an
+  M-series Mac (MPS) that's a few minutes and ~1.5–3 GB RAM; the saved model (~260 MB) stays
+  in gitignored `data/models/`.
+
+Expected trade-offs (estimates, to be replaced by measured numbers):
+
+| | accuracy | macro-F1 | latency | $/1k questions |
+|---|---|---|---|---|
+| TF-IDF + LR | 0.810 | 0.757 | 0.5 ms | $0 |
+| DistilBERT | ? | ? | ~10 ms (local) | $0 |
+| Claude Haiku 5.5 | ? | ? | ~0.5–1 s | ~$0.10 |
+| Claude Opus 5.5 (current) | ? | ? | ~1–2 s | ~$3–5 |
+
+Cost basis: one classify call is ~300–400 input tokens (prompt, schema, question) and
+~50–150 output tokens (Opus always reasons a little, even at low effort; reasoning is billed
+as output). Opus 5.5 costs $4 / $20 per million input / output tokens, Haiku 5.5 $0.10 /
+$0.50. Scoring all 105 test questions costs ~$0.30–0.50 on Opus and ~1 cent on Haiku.
+
+**Haiku 5.5 vs. fine-tuned DistilBERT**: both are cheaper stand-ins for Opus, but differ in kind.
+
+| | Claude Haiku 5.5 | Fine-tuned DistilBERT |
+|---|---|---|
+| Training | none: reads the same category prompt as Opus | ~2–5 min on the generated questions |
+| Runs on | Anthropic's API | locally |
+| Strengths | understands unseen phrasing; a new category is a prompt edit | ~10 ms, free, offline, self-versioned |
+| Weaknesses | network call; no server-side refusal fallback | knows only what the (synthetic) training data shows; new category = new data + retrain |
+
+Expectations to verify: Haiku scores close to Opus (six-way routing is easy for an LLM) at
+~40× lower cost, making it the practical pick for the agent; DistilBERT beats TF-IDF where
+meaning matters more than words (concept, off-topic questions that read like howtos), but may
+show the same generated-vs-real gap.
+
 ## Roadmap
 
 - [x] 1. Ingest + section-based chunking
