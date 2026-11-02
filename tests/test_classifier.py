@@ -52,3 +52,30 @@ def test_claude_llm_cost_from_token_counts():
                                                          output_tokens=100_000)))
     # 1M input at $0.10 + 0.2M output at $0.50 per million tokens.
     assert llm.calls == 2 and abs(llm.cost_usd() - 0.20) < 1e-9
+
+
+def test_bert_split_keeps_category_mix():
+    from sklearn_assistant.classifier import bert
+
+    questions = [LabeledQuestion(f"q{i}", CATEGORIES[i % len(CATEGORIES)]) for i in range(120)]
+    train, val = bert.split_train_val(questions)
+    assert len(val) == 18 and len(train) == 102
+    assert {q.category for q in val} == set(CATEGORIES)  # every category in both parts
+    assert not {q.question for q in train} & {q.question for q in val}
+
+
+def test_bert_loader_pads_per_batch_and_encodes_labels():
+    import torch
+
+    from sklearn_assistant.classifier import bert
+
+    def fake_tokenizer(texts, **kwargs):
+        # One token per word, padded to the longest text in the batch.
+        width = max(len(t.split()) for t in texts)
+        ids = [[1] * len(t.split()) + [0] * (width - len(t.split())) for t in texts]
+        return {"input_ids": torch.tensor(ids), "attention_mask": torch.tensor(ids)}
+
+    questions = [LabeledQuestion("a b c", "api"), LabeledQuestion("a", "howto")]
+    batch = next(iter(bert.make_loader(questions, fake_tokenizer, shuffle=False)))
+    assert batch["input_ids"].shape == (2, 3)
+    assert batch["labels"].tolist() == [bert.LABEL2ID["api"], bert.LABEL2ID["howto"]]

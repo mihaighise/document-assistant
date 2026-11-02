@@ -219,11 +219,12 @@ flowchart LR
 ```bash
 .venv/bin/python scripts/generate_classifier_data.py   # once; output is committed
 .venv/bin/python scripts/train_classifier.py           # ~5 s, logs to MLflow "classifier"
+.venv/bin/python scripts/train_bert_classifier.py      # ~1 min (MPS), --seed N to repeat
 ```
 
 Trains cheaper replacements for the agent's `classify` LLM call and scores them on the same
-six categories. Done so far: **TF-IDF + logistic regression** and **Claude Opus 5.5 / Haiku
-5.5**; fine-tuned BERT comes next. All are scored by the same code (`evaluation/classifier.py`).
+six categories: **TF-IDF + logistic regression**, **fine-tuned DistilBERT** and **Claude Opus
+5.5 / Haiku 5.5**, all scored by the same code (`evaluation/classifier.py`).
 
 **Data**
 
@@ -276,7 +277,7 @@ measured, not estimated. Questions go one at a time, as in the agent.
 | TF-IDF + LR | 0.810 | 0.757 | 0.818 | 2 | 0.5 ms | $0 |
 | Claude Haiku 5.5 | 0.886 | **0.828** | 0.957 | 0 | 1.1 s | **$0.05** |
 | Claude Opus 5.5 (agent today) | **0.905** | 0.822 | **1.000** | 0 | 1.3 s | $2.04 |
-| DistilBERT | next | | | | | |
+| DistilBERT (mean of 3 seeds) | 0.800 | 0.734 | 0.818 | 2–7 | 6.7 ms (CPU) | $0 |
 
 - **Haiku matches Opus at 1/40 of the cost.** Macro-F1 is a tie (0.828 vs. 0.822; one
   question moves it more than that), accuracy differs by 2 questions. Haiku's only extra
@@ -298,14 +299,40 @@ measured, not estimated. Questions go one at a time, as in the agent.
 
 | | Claude Haiku 5.5 | Fine-tuned DistilBERT |
 |---|---|---|
-| Training | none: reads the same category prompt as Opus | ~2–5 min on the generated questions |
+| Training | none: reads the same category prompt as Opus | ~45 s on the generated questions |
 | Runs on | Anthropic's API | locally |
 | Strengths | understands unseen phrasing; a new category is a prompt edit | ~10 ms, free, offline, self-versioned |
 | Weaknesses | network call; no server-side refusal fallback | knows only what the (synthetic) training data shows; new category = new data + retrain |
 
-Haiku turned out as expected (Opus-level at ~1/40 the cost). Still to verify: whether
-DistilBERT beats TF-IDF where meaning matters more than words (concept, off-topic questions
-that read like howtos), or shows the same generated-vs-real gap.
+**Fine-tuned DistilBERT**
+
+`classifier/bert.py` is a plain PyTorch loop (tokenize → forward → cross-entropy loss →
+backward → AdamW step, with linear warmup/decay), commented step by step. 15% of the generated
+questions are held out to pick the best epoch; the test set is only used at the end. 4 epochs
+take ~45 s on MPS; the model (256 MB) is saved to gitignored `data/models/distilbert/`.
+
+| seed | val macro-F1 (generated) | test accuracy | test macro-F1 | real questions declined |
+|---|---|---|---|---|
+| 0 | 0.962 | 0.762 | 0.719 | 7 |
+| 1 | 0.959 | 0.810 | 0.751 | 3 |
+| 2 | 0.959 | 0.829 | 0.733 | 2 |
+
+- **DistilBERT does not beat TF-IDF** (0.734 vs. 0.757 macro-F1), despite 0.96 on held-out
+  generated questions. The gap from generated to real questions is even larger than TF-IDF's.
+- **The likely cause is the training data, not the model.** Generated on-topic questions
+  were seeded from doc section titles, so most name a scikit-learn class or parameter;
+  generated off-topic ones are generic programming. BERT learns that shortcut: real questions
+  in plain words ("How do I save a trained model to disk?", "How do I turn text documents into
+  TF-IDF features?") get declined as off-topic. A bigger model fits the training
+  data's quirks more closely, which is exactly what hurts here.
+- **Seeds matter**: test macro-F1 spans 0.72–0.75 and declined questions 2–7 across seeds,
+  so single-run differences of this size between models aren't meaningful.
+- Fix to try if BERT is wanted: generate on-topic questions that avoid scikit-learn names
+  (plain-language problems), and harder near-miss negatives.
+
+**Verdict:** Claude Haiku 5.5 is the pick for the agent's classifier: Opus-level accuracy,
+no wrongly declined questions, ~$0.05 per 1k questions, nothing to retrain. BERT's speed
+(7 ms, free) doesn't help while it declines real questions.
 
 ## Hosting on AWS (planned, step 8)
 
@@ -333,8 +360,8 @@ locally and shipped as files; the server only runs them on one short question at
 - **CPU-only PyTorch** in the image; the default CUDA build adds several GB for nothing.
 - **Code check:** `--check-code` runs model-written code on the host. Keep it off on a public
   server, or move it into a separate locked-down container.
-- If BERT doesn't beat Haiku in step 5, it can be dropped from the server (~300 MB less RAM,
-  no retraining) for ~$0.05 per 1k questions.
+- Step 5 picked Haiku over BERT, so the server doesn't need the BERT model (~300 MB less
+  RAM, no retraining) at ~$0.05 per 1k questions.
 
 ## Roadmap
 
@@ -342,7 +369,7 @@ locally and shipped as files; the server only runs them on one short question at
 - [x] 2. Embeddings + Chroma, BM25 + hybrid retrieval
 - [x] 3. Evaluation set (81 questions) + recall@5 / MRR, tracked in MLflow
 - [x] 4. LangGraph agent: classify → retrieve → grade/rewrite → answer (+ code sandbox)
-- [ ] 5. Question classifier: TF-IDF + LR (done) vs. fine-tuned BERT vs. LLM (done)
+- [x] 5. Question classifier: TF-IDF + LR vs. fine-tuned BERT vs. LLM
 - [ ] 6. Fine-tuned embeddings + cross-encoder reranker
 - [ ] 7. Answer evaluation (faithfulness, correctness)
 - [ ] 8. FastAPI + Docker, Streamlit UI, tracing
@@ -368,6 +395,7 @@ src/sklearn_assistant/
   agent/sandbox.py     runs answer code in a subprocess
   classifier/data.py   classifier train/test sets, leakage filter
   classifier/tfidf.py  TF-IDF + logistic regression classifier
+  classifier/bert.py   DistilBERT fine-tuning (plain PyTorch) + inference
   evaluation/classifier.py  accuracy / macro-F1 / latency for any classifier
   tracking.py          MLflow helpers: git commit tag, data hashes, classifier runs
 scripts/ingest.py      step 1 entry point
@@ -377,6 +405,7 @@ scripts/ask.py         step 4 entry point (ask the agent)
 scripts/generate_classifier_data.py  step 5: generate training questions with Claude
 scripts/train_classifier.py          step 5: train + score TF-IDF + LR (logs to MLflow)
 scripts/eval_llm_classifier.py       step 5: score Opus / Haiku as classifiers (logs to MLflow)
+scripts/train_bert_classifier.py     step 5: fine-tune + score DistilBERT (logs to MLflow)
 eval/retrieval_questions.jsonl  hand-labeled retrieval eval set
 datasets/classifier/  generated training questions + hand-written off-topic test questions
 tests/                 pytest suite

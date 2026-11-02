@@ -32,11 +32,13 @@ def file_sha(*paths: Path) -> str:
 
 
 def log_classifier_run(run_name: str, params: dict, metrics: dict, rows: list[dict],
-                       matrix: list[list[int]], files: tuple[Path, ...] = ()) -> None:
+                       matrix: list[list[int]], files: tuple[Path, ...] = (),
+                       history: list[dict] = ()) -> None:
     """Log one classifier evaluation to the MLflow experiment "classifier".
 
     Every classifier (TF-IDF, BERT, LLMs) logs the same metrics and artifacts, so they
-    line up as columns in the MLflow UI's run comparison.
+    line up as columns in the MLflow UI's run comparison. `history` holds per-epoch
+    numbers for trained models, logged as steps so MLflow can chart them.
     """
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     mlflow.set_experiment("classifier")
@@ -45,6 +47,8 @@ def log_classifier_run(run_name: str, params: dict, metrics: dict, rows: list[di
                                                               OFF_TOPIC_TEST_PATH),
                            "git_commit": git_commit()})
         mlflow.log_metrics(metrics)
+        for row in history:
+            mlflow.log_metrics({k: v for k, v in row.items() if k != "epoch"}, step=row["epoch"])
         with tempfile.TemporaryDirectory() as tmp:
             errors = Path(tmp) / "misclassified.json"
             errors.write_text(json.dumps([r for r in rows if not r["correct"]], indent=1))
