@@ -8,33 +8,19 @@
 import argparse
 import hashlib
 import json
-import subprocess
 import tempfile
 from pathlib import Path
 
 import mlflow
 
-from sklearn_assistant.config import EMBED_MODEL, EVAL_QUESTIONS_PATH, MLFLOW_TRACKING_URI, ROOT
+from sklearn_assistant.config import EMBED_MODEL, EVAL_QUESTIONS_PATH, MLFLOW_TRACKING_URI
 from sklearn_assistant.evaluation.retrieval import DEPTH, evaluate, load_questions, missing_labels
 from sklearn_assistant.ingest.chunker import MAX_CHARS
 from sklearn_assistant.retrieval import hybrid
 from sklearn_assistant.retrieval.hybrid import HybridRetriever, load_chunks
+from sklearn_assistant.tracking import git_commit
 
 EXPERIMENT = "retrieval"
-
-
-def git_commit() -> str:
-    """Current commit hash, marked dirty if there are uncommitted changes."""
-    # Logged with every run so a result can be traced back to the exact code. "-dirty"
-    # warns that the working tree had uncommitted edits, so checking out that commit
-    # alone won't reproduce the run.
-    sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
-                         capture_output=True, text=True).stdout.strip()
-    # `git status --porcelain` prints one line per changed or untracked file, and nothing
-    # when the tree is clean.
-    dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT,
-                           capture_output=True, text=True).stdout.strip()
-    return f"{sha}-dirty" if dirty else sha
 
 
 def main() -> None:
