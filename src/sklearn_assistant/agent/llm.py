@@ -16,12 +16,13 @@ How an LLM call works, in short:
   we send (input) and what the model writes (output), and `max_tokens` caps the output.
 """
 
+import threading
 from typing import Literal, Protocol, TypeVar
 
 import anthropic
 from pydantic import BaseModel
 
-from sklearn_assistant.config import LLM_MODEL
+from sklearn_assistant.config import LLM_MODEL, PRICES_PER_MTOK
 
 # T stands for "whichever Pydantic class the caller passes in". It lets type checkers know
 # that structured(..., schema=Grades) returns a Grades object, not just "some BaseModel".
@@ -56,13 +57,23 @@ class LLM(Protocol):
 class ClaudeLLM:
     """LLM implementation backed by the Anthropic SDK."""
 
-    def __init__(self, model: str = LLM_MODEL, client: anthropic.Anthropic | None = None):
+    def __init__(self, model: str = LLM_MODEL, client: anthropic.Anthropic | None = None,
+                 fallback: bool = True):
         # Anthropic() reads ANTHROPIC_API_KEY (or another configured credential) from the
         # environment. The SDK already retries 429/5xx/connection errors twice with backoff.
         # (config.py has already copied the key from .env into the environment by now.)
         # One client is reused for every call; it keeps the HTTP connection open.
         self.client = client or anthropic.Anthropic()
         self.model = model
+        # Server-side fallback exists only for some models. Claude Haiku 5.5 has none: a
+        # `fallbacks` list is rejected (400) there, so its client is built with fallback=False
+        # and the parameter is left out of the request entirely.
+        self.extra = {"betas": [FALLBACK_BETA], "fallbacks": "default"} if fallback else {}
+        # Running token totals over every call made with this object, read by cost_usd().
+        # Each reply reports how many tokens it used (response.usage). The lock keeps the
+        # totals right when several threads share one ClaudeLLM (the data generator does).
+        self.input_tokens = self.output_tokens = self.calls = 0
+        self._lock = threading.Lock()
 
     def structured(self, system: str, user: str, schema: type[T], effort: Effort) -> T:
         """One call whose output is constrained to `schema`'s JSON shape."""
@@ -80,9 +91,11 @@ class ClaudeLLM:
             messages=[{"role": "user", "content": user}],
             output_format=schema,      # the Pydantic class the reply must match
             output_config={"effort": effort},  # merged with the schema by parse()
-            betas=[FALLBACK_BETA],     # switch on the beta feature used on the next line
-            fallbacks="default",       # let the API pick a fallback model on refusal
+            # When fallback is on: betas=[FALLBACK_BETA] switches the beta feature on, and
+            # fallbacks="default" lets the API pick a fallback model on refusal.
+            **self.extra,
         )
+        self._count(response)
         _raise_on_refusal(response)
         return response.parsed_output
 
@@ -96,13 +109,28 @@ class ClaudeLLM:
             system=system,
             messages=[{"role": "user", "content": user}],
             output_config={"effort": effort},
-            betas=[FALLBACK_BETA],
-            fallbacks="default",
+            **self.extra,
         )
+        self._count(response)
         _raise_on_refusal(response)
         # A reply is a list of content blocks, not a single string.
         # The reply can also hold thinking blocks (empty by default); keep only text.
         return "".join(block.text for block in response.content if block.type == "text")
+
+    def _count(self, response) -> None:
+        """Add one reply's token usage to the running totals."""
+        # output_tokens includes the model's internal reasoning, which is billed as output.
+        with self._lock:
+            self.input_tokens += response.usage.input_tokens
+            self.output_tokens += response.usage.output_tokens
+            self.calls += 1
+
+    def cost_usd(self) -> float:
+        """What the calls so far cost, from token totals and the model's list price."""
+        # Approximate in one rare case: a refused request answered by a fallback model is
+        # billed at that model's price, not this one's.
+        input_price, output_price = PRICES_PER_MTOK[self.model]
+        return (self.input_tokens * input_price + self.output_tokens * output_price) / 1e6
 
 
 def _raise_on_refusal(response) -> None:

@@ -222,8 +222,8 @@ flowchart LR
 ```
 
 Trains cheaper replacements for the agent's `classify` LLM call and scores them on the same
-six categories. Done so far: **TF-IDF + logistic regression**. Fine-tuned BERT and the LLM
-itself come next, scored by the same code (`evaluation/classifier.py`).
+six categories. Done so far: **TF-IDF + logistic regression** and **Claude Opus 5.5 / Haiku
+5.5**; fine-tuned BERT comes next. All are scored by the same code (`evaluation/classifier.py`).
 
 **Data**
 
@@ -259,29 +259,40 @@ picked by 5-fold cross-validation on macro-F1.
 - Small classes (5 api, 4 troubleshooting test questions) make their F1 noisy: one question
   moves it by ~0.1–0.2.
 
-**Next: the LLM and BERT rows**
+**LLM classifiers**
 
-- **LLM**: score the agent's existing `classify` call (no training) on the same 105 questions
-  with the same `evaluate()`. `ClaudeLLM` will count the tokens each call uses, so the run
-  logs real cost per 1k questions instead of an estimate. Questions go one at a time, as in
-  the agent, so latency is realistic.
-- **Fine-tuned DistilBERT** (66M parameters): trained on the same generated questions. On an
-  M-series Mac (MPS) that's a few minutes and ~1.5–3 GB RAM; the saved model (~260 MB) stays
-  in gitignored `data/models/`.
+```bash
+.venv/bin/python scripts/eval_llm_classifier.py    # Opus 5.5 + Haiku 5.5, ~5 min, ~$0.22
+```
 
-Expected trade-offs (estimates, to be replaced by measured numbers):
+Runs the agent's exact `classify` call (same prompt, schema, low effort) once per test
+question, with no training. `ClaudeLLM` counts the tokens each reply reports, so cost is
+measured, not estimated. Questions go one at a time, as in the agent.
 
-| | accuracy | macro-F1 | latency | $/1k questions |
-|---|---|---|---|---|
-| TF-IDF + LR | 0.810 | 0.757 | 0.5 ms | $0 |
-| DistilBERT | ? | ? | ~10 ms (local) | $0 |
-| Claude Haiku 5.5 | ? | ? | ~0.5–1 s | ~$0.10 |
-| Claude Opus 5.5 (current) | ? | ? | ~1–2 s | ~$3–5 |
+**Comparison (105 hand-written test questions)**
 
-Cost basis: one classify call is ~300–400 input tokens (prompt, schema, question) and
-~50–150 output tokens (Opus always reasons a little, even at low effort; reasoning is billed
-as output). Opus 5.5 costs $4 / $20 per million input / output tokens, Haiku 5.5 $0.10 /
-$0.50. Scoring all 105 test questions costs ~$0.30–0.50 on Opus and ~1 cent on Haiku.
+| | accuracy | macro-F1 | off_topic F1 | real questions wrongly declined | latency | $/1k questions |
+|---|---|---|---|---|---|---|
+| TF-IDF + LR | 0.810 | 0.757 | 0.818 | 2 | 0.5 ms | $0 |
+| Claude Haiku 5.5 | 0.886 | **0.828** | 0.957 | 0 | 1.1 s | **$0.05** |
+| Claude Opus 5.5 (agent today) | **0.905** | 0.822 | **1.000** | 0 | 1.3 s | $2.04 |
+| DistilBERT | next | | | | | |
+
+- **Haiku matches Opus at 1/40 of the cost.** Macro-F1 is a tie (0.828 vs. 0.822; one
+  question moves it more than that), accuracy differs by 2 questions. Haiku's only extra
+  misses are two off-topic near misses (conda, TensorFlow vs. Keras) that it answered rather
+  than declined, which is the harmless direction.
+- **Both LLMs beat TF-IDF clearly**, mostly on off-topic (0 real questions wrongly declined vs.
+  2, and 0–2 off-topic questions let through vs. 6) and on concept.
+- **The LLMs' remaining errors are mostly the same 8–10 questions**, nearly all ambiguous
+  labels ("Which solver should I use for LogisticRegression?" is concept or comparison;
+  "Should I scale before splitting?" is troubleshooting or howto). That's close to the ceiling
+  this test set can measure.
+- **Measured cost is lower than estimated** ($2.04 vs. the estimated $3–5 per 1k for Opus):
+  ~450 input and ~13 output tokens per call. At low effort the models skip reasoning on a task
+  this easy, so output is just the JSON label.
+- **Latency is network-bound**: Haiku is barely faster than Opus here (1.1 vs. 1.3 s), because
+  the reply is a few tokens and most of the time is the round trip.
 
 **Haiku 5.5 vs. fine-tuned DistilBERT**: both are cheaper stand-ins for Opus, but differ in kind.
 
@@ -292,10 +303,9 @@ $0.50. Scoring all 105 test questions costs ~$0.30–0.50 on Opus and ~1 cent on
 | Strengths | understands unseen phrasing; a new category is a prompt edit | ~10 ms, free, offline, self-versioned |
 | Weaknesses | network call; no server-side refusal fallback | knows only what the (synthetic) training data shows; new category = new data + retrain |
 
-Expectations to verify: Haiku scores close to Opus (six-way routing is easy for an LLM) at
-~40× lower cost, making it the practical pick for the agent; DistilBERT beats TF-IDF where
-meaning matters more than words (concept, off-topic questions that read like howtos), but may
-show the same generated-vs-real gap.
+Haiku turned out as expected (Opus-level at ~1/40 the cost). Still to verify: whether
+DistilBERT beats TF-IDF where meaning matters more than words (concept, off-topic questions
+that read like howtos), or shows the same generated-vs-real gap.
 
 ## Hosting on AWS (planned, step 8)
 
@@ -323,8 +333,8 @@ locally and shipped as files; the server only runs them on one short question at
 - **CPU-only PyTorch** in the image; the default CUDA build adds several GB for nothing.
 - **Code check:** `--check-code` runs model-written code on the host. Keep it off on a public
   server, or move it into a separate locked-down container.
-- If Haiku matches BERT in step 5, BERT can be dropped from the server (~300 MB less RAM, no
-  retraining) for ~$0.10 per 1k questions.
+- If BERT doesn't beat Haiku in step 5, it can be dropped from the server (~300 MB less RAM,
+  no retraining) for ~$0.05 per 1k questions.
 
 ## Roadmap
 
@@ -332,7 +342,7 @@ locally and shipped as files; the server only runs them on one short question at
 - [x] 2. Embeddings + Chroma, BM25 + hybrid retrieval
 - [x] 3. Evaluation set (81 questions) + recall@5 / MRR, tracked in MLflow
 - [x] 4. LangGraph agent: classify → retrieve → grade/rewrite → answer (+ code sandbox)
-- [ ] 5. Question classifier: TF-IDF + LR (done) vs. fine-tuned BERT vs. LLM
+- [ ] 5. Question classifier: TF-IDF + LR (done) vs. fine-tuned BERT vs. LLM (done)
 - [ ] 6. Fine-tuned embeddings + cross-encoder reranker
 - [ ] 7. Answer evaluation (faithfulness, correctness)
 - [ ] 8. FastAPI + Docker, Streamlit UI, tracing
@@ -359,13 +369,14 @@ src/sklearn_assistant/
   classifier/data.py   classifier train/test sets, leakage filter
   classifier/tfidf.py  TF-IDF + logistic regression classifier
   evaluation/classifier.py  accuracy / macro-F1 / latency for any classifier
-  tracking.py          git commit tag for MLflow runs
+  tracking.py          MLflow helpers: git commit tag, data hashes, classifier runs
 scripts/ingest.py      step 1 entry point
 scripts/build_index.py step 2 entry point
 scripts/eval_retrieval.py  step 3 entry point (logs to MLflow)
 scripts/ask.py         step 4 entry point (ask the agent)
 scripts/generate_classifier_data.py  step 5: generate training questions with Claude
 scripts/train_classifier.py          step 5: train + score TF-IDF + LR (logs to MLflow)
+scripts/eval_llm_classifier.py       step 5: score Opus / Haiku as classifiers (logs to MLflow)
 eval/retrieval_questions.jsonl  hand-labeled retrieval eval set
 datasets/classifier/  generated training questions + hand-written off-topic test questions
 tests/                 pytest suite
