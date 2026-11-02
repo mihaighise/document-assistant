@@ -169,6 +169,20 @@ cp .env.example .env    # then put your key in .env (gitignored)
 .venv/bin/python scripts/ask.py --check-code "How do I plot a learning curve?"
 ```
 
+**Why an LLM?** Steps 1–3 only *find* relevant doc sections; the LLM turns them into an
+answer (RAG: retrieval-augmented generation). Retrieval alone can't explain or write code;
+an LLM alone answers from memory, can be outdated or invent parameters, and can't cite.
+Restricting it to the retrieved chunks and requiring citations makes answers checkable. Only
+the **answer** step truly needs an LLM; **classify** (step 5) and **grade** (step 6, reranker)
+are where cheaper models get compared against it.
+
+**Why LangGraph?** The agent branches and loops (decline, rewrite and search again, give up,
+fix code), so it's written as a graph: **nodes** are plain Python functions (`classify`,
+`grade`, ...), **edges** pick the next step (some conditionally), and a shared **state** dict
+carries the question, chunks and answer between them. Plain `if`/`while` code could do the
+same at this size; LangGraph keeps the flow explicit (the wiring in `graph.py` *is* the
+diagram), lets single nodes be swapped (steps 5–6), and gives step 8 streaming and tracing.
+
 ```mermaid
 flowchart LR
     C[classify] -->|off_topic| D[decline]
