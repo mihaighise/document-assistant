@@ -297,6 +297,35 @@ Expectations to verify: Haiku scores close to Opus (six-way routing is easy for 
 meaning matters more than words (concept, off-topic questions that read like howtos), but may
 show the same generated-vs-real gap.
 
+## Hosting on AWS (planned, step 8)
+
+Everything runs on CPU once trained, so no GPU instance is needed. Models are trained
+locally and shipped as files; the server only runs them on one short question at a time.
+
+| Component | RAM | GPU? |
+|---|---|---|
+| Python + PyTorch + app | ~0.7–1 GB | no |
+| BGE embedding model (query embedding) | ~150 MB | no, ~10–30 ms/question |
+| Fine-tuned DistilBERT (classifier) | ~300 MB | no, ~10–30 ms/question |
+| Chroma index + BM25 (7,873 chunks) | ~100–200 MB | no |
+| Claude (answer, grade) | — (API call) | — |
+
+~1.5–2.5 GB total: a 4 GB instance works, 8 GB is comfortable.
+
+- **Deploy:** a Docker image with the app, trained models and prebuilt Chroma index (or
+  models/index on S3, fetched at startup). Run it on **EC2** (simplest to debug) or **ECS
+  Fargate / App Runner** (managed, less upkeep). A 4–8 GB instance is roughly $30–60/month
+  always-on (check current EC2 pricing), plus Claude API usage.
+- **Secrets:** `ANTHROPIC_API_KEY` from Secrets Manager or SSM Parameter Store, injected as
+  an environment variable; the code already reads it from the environment.
+- **Architecture:** Apple Silicon builds ARM images. Build for `linux/amd64`, or use Graviton
+  (`t4g`, ARM, cheaper) as-is.
+- **CPU-only PyTorch** in the image; the default CUDA build adds several GB for nothing.
+- **Code check:** `--check-code` runs model-written code on the host. Keep it off on a public
+  server, or move it into a separate locked-down container.
+- If Haiku matches BERT in step 5, BERT can be dropped from the server (~300 MB less RAM, no
+  retraining) for ~$0.10 per 1k questions.
+
 ## Roadmap
 
 - [x] 1. Ingest + section-based chunking
