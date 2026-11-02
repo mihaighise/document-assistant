@@ -29,14 +29,18 @@ class Rewrite(BaseModel):
     query: str
 
 
-CLASSIFY_SYSTEM = """\
-You route questions for a scikit-learn documentation assistant. Pick one category:
+# Shared by the LLM classifier below and by step 5's training-data generator
+# (scripts/generate_classifier_data.py), so every classifier learns the same definitions.
+CATEGORY_DEFINITIONS = """\
 - howto: how to accomplish a task ("How do I scale features?")
 - concept: how or why something works ("What is successive halving?")
 - api: a specific parameter, attribute, method or default ("What does warm_start do?")
 - comparison: the difference between options ("Ridge vs Lasso?")
 - troubleshooting: an error, warning or unexpected result
 - off_topic: not about scikit-learn or machine learning with it"""
+
+CLASSIFY_SYSTEM = ("You route questions for a scikit-learn documentation assistant. "
+                   "Pick one category:\n" + CATEGORY_DEFINITIONS)
 
 GRADE_SYSTEM = """\
 You judge search results for a scikit-learn documentation assistant. Given a question \
