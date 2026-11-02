@@ -9,6 +9,17 @@
 
 Each node is a function that reads the shared state and returns only the keys it
 changes; LangGraph merges them in. Routing functions pick the next node from state.
+
+LangGraph in four ideas (all used below):
+1. State: one dict (AgentState) that every step can read. It is the agent's memory
+   for a single question: the query, the chunks found, the answer so far, ...
+2. Nodes: the steps. Each is a plain Python function `state -> dict of updates`.
+   A node never calls the next node itself; it only reports what it changed.
+3. Edges: what runs next. A normal edge always goes A -> B. A conditional edge calls a
+   small routing function that looks at the state and returns the next node's name.
+4. Compile + invoke: build_graph() declares nodes and edges, compile() checks the wiring
+   and returns a runnable object, and invoke(initial_state) runs it: start at START,
+   run a node, merge its updates into the state, follow the edge, repeat until END.
 """
 
 import operator
@@ -28,6 +39,8 @@ MAX_CODE_FIXES = 1   # times the answer may be regenerated after its code fails
 RETRIEVAL_MODE = "dense"
 
 
+# The state's shape. TypedDict is a dict with declared keys and types; LangGraph reads
+# these annotations to know which keys exist and how to merge updates into them.
 class AgentState(TypedDict, total=False):
     """Everything the nodes share. total=False: keys appear as nodes fill them in."""
 
@@ -45,26 +58,39 @@ class AgentState(TypedDict, total=False):
     code_status: str           # "passed" | "failed" | "skipped" (checker off or no code)
     # Annotated with operator.add: each node's list is *appended* to the existing one
     # instead of replacing it, giving a step-by-step log of the run.
+    # (This merge rule is called a "reducer". Every other key uses the default rule:
+    # a node's new value simply overwrites the old one.)
     trace: Annotated[list[str], operator.add]
 
 
 def build_graph(llm: LLM, retriever: HybridRetriever, check_code: bool = False):
     """Wire the nodes into a compiled graph. Dependencies are passed in so tests can fake them."""
+    # The node functions are defined inside build_graph so they can use `llm`, `retriever`
+    # and `check_code` directly (closures) while keeping LangGraph's node signature,
+    # which is just `node(state) -> dict`.
+
+    # ---- Nodes: each receives the full state and returns only the keys it changes ----
 
     def classify(state: AgentState) -> dict:
+        # LLM call #1 (cheap, low effort): put the question into one category.
         result = llm.structured(prompts.CLASSIFY_SYSTEM, state["question"],
                                 prompts.Classification, effort="low")
         # The first search uses the question as-is; rewrites happen only if it fails.
+        # This first node also initializes the counters the later nodes increment.
         return {"category": result.category, "query": state["question"],
                 "queries": [state["question"]], "rewrites": 0, "code_fixes": 0,
                 "trace": [f"classify: {result.category}"]}
 
     def retrieve(state: AgentState) -> dict:
+        # No LLM here: this is the search engine from steps 1-2.
         results = retriever.retrieve(state["query"], k=K, mode=RETRIEVAL_MODE)
         docs = [r.chunk for r in results]
         return {"docs": docs, "trace": [f"retrieve: {len(docs)} chunks for {state['query']!r}"]}
 
     def grade(state: AgentState) -> dict:
+        # LLM call #2: search returns the 5 *closest* chunks even when none answer the
+        # question, so the LLM filters them. This is what lets the agent notice a failed
+        # search and retry, instead of answering from irrelevant text.
         # One call grades all K chunks at once: cheaper and faster than one call per chunk.
         user = f"Question: {state['question']}\n\nSources:\n{prompts.format_sources(state['docs'])}"
         grades = llm.structured(prompts.GRADE_SYSTEM, user, prompts.Grades, effort="low")
@@ -75,6 +101,8 @@ def build_graph(llm: LLM, retriever: HybridRetriever, check_code: bool = False):
                 "trace": [f"grade: {len(relevant)}/{len(state['docs'])} relevant"]}
 
     def rewrite(state: AgentState) -> dict:
+        # LLM call #3 (only when grading kept nothing): rephrase the question in the
+        # docs' vocabulary, since users and docs often name the same thing differently.
         tried = "\n".join(f"- {q}" for q in state["queries"])
         user = f"Question: {state['question']}\n\nQueries already tried:\n{tried}"
         result = llm.structured(prompts.REWRITE_SYSTEM, user, prompts.Rewrite, effort="low")
@@ -82,6 +110,8 @@ def build_graph(llm: LLM, retriever: HybridRetriever, check_code: bool = False):
                 "rewrites": state["rewrites"] + 1, "trace": [f"rewrite: {result.query!r}"]}
 
     def answer(state: AgentState) -> dict:
+        # LLM call #4, the main one: write the reply. Medium effort, free text.
+        # The prompt holds everything the model may use: the question and the kept chunks.
         user = (f"Question type: {state['category']}\nQuestion: {state['question']}\n\n"
                 f"Sources:\n{prompts.format_sources(state['relevant'])}")
         # Second pass after a failed code check: show the model its answer and the error.
@@ -97,6 +127,8 @@ def build_graph(llm: LLM, retriever: HybridRetriever, check_code: bool = False):
                 "code_status": "skipped", "trace": ["answer"]}
 
     def check_code(state: AgentState) -> dict:
+        # No LLM here: run the answer's code and record whether it worked. The routing
+        # function below decides whether to send it back to `answer` for a fix.
         result = run_python(extract_code(state["answer"]))
         if result.ok:
             return {"code_status": "passed", "trace": ["check_code: passed"]}
@@ -118,7 +150,10 @@ def build_graph(llm: LLM, retriever: HybridRetriever, check_code: bool = False):
         # could only answer from memory, which this assistant promises not to do.
         return {"answer": prompts.NO_SOURCES_ANSWER, "citations": [], "trace": ["no_answer"]}
 
-    # Routing functions return the name of the next node (or END).
+    # ---- Routing: functions used by conditional edges ----
+    # Each runs right after its node (with the state already updated) and returns the
+    # name of the next node (or END). They only decide; they never change the state.
+
     def route_after_classify(state: AgentState) -> str:
         return "decline" if state["category"] == "off_topic" else "retrieve"
 
@@ -136,12 +171,19 @@ def build_graph(llm: LLM, retriever: HybridRetriever, check_code: bool = False):
             return "answer"
         return END
 
+    # ---- Wiring: declare the graph; nothing runs until invoke() ----
+
+    # StateGraph(AgentState) creates an empty graph whose state has AgentState's shape.
     graph = StateGraph(AgentState)
+    # Register each function as a node under a name; edges refer to nodes by these names.
     for name, fn in [("classify", classify), ("retrieve", retrieve), ("grade", grade),
                      ("rewrite", rewrite), ("answer", answer), ("check_code", check_code),
                      ("decline", decline), ("no_answer", no_answer)]:
         graph.add_node(name, fn)
+    # START and END are LangGraph's built-in entry and exit points.
     graph.add_edge(START, "classify")
+    # add_conditional_edges(node, router, possible_targets): after `node`, call `router`
+    # and go where it says. Listing the targets lets compile() check that they exist.
     graph.add_conditional_edges("classify", route_after_classify, ["decline", "retrieve"])
     graph.add_edge("retrieve", "grade")
     graph.add_conditional_edges("grade", route_after_grade, ["answer", "rewrite", "no_answer"])
@@ -150,9 +192,14 @@ def build_graph(llm: LLM, retriever: HybridRetriever, check_code: bool = False):
     graph.add_conditional_edges("check_code", route_after_check, ["answer", END])
     graph.add_edge("decline", END)
     graph.add_edge("no_answer", END)
+    # compile() validates the wiring (e.g. no edge to a missing node) and returns the
+    # runnable graph. The same compiled graph can answer any number of questions.
     return graph.compile()
 
 
 def ask(graph, question: str) -> AgentState:
     """Run one question through a compiled graph and return the final state."""
+    # invoke() takes the initial state (just the question, plus an empty trace for the
+    # reducer to append to), runs nodes until END, and returns the final merged state.
+    # A typical run: classify -> retrieve -> grade -> answer, i.e. 3 LLM calls.
     return graph.invoke({"question": question, "trace": []})
