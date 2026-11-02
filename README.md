@@ -75,11 +75,49 @@ diminishing returns for repeats, and a small penalty for very long chunks. The t
 `fit`, `transform`; `GroupKFold` → `groupkfold`, `group`, `fold`), so both exact and partial
 names match.
 
-**Where BM25 is used:** in `retrieve(mode="bm25")` alone, and in `mode="hybrid"`, where its
-ranking is merged with the embedding ranking (Reciprocal Rank Fusion, step 2). Step 3 measured
-all three, and plain embedding search won (recall@5 0.601 vs. 0.553 hybrid, 0.430 BM25), so
-**the agent currently uses embedding search only** (`RETRIEVAL_MODE = "dense"` in `graph.py`).
-BM25 stays in the code for the evaluation and for step 6, where a reranker may let hybrid win.
+**How each is stored**
+
+- **Embeddings: on disk in Chroma** (`data/chroma/`), one 384-number vector per chunk plus its
+  text and URL. Computing them takes ~90 s (a neural network runs over every chunk), so they
+  are built once by `scripts/build_index.py`.
+- **Tokens: not saved; rebuilt in memory** from `data/processed/chunks.jsonl` each time the
+  retriever loads (a few seconds, `retrieval/bm25.py`). The BM25 index is essentially word
+  counts plus statistics over all chunks:
+
+```
+Per chunk: how often each word appears          (illustrative numbers)
+  chunk 17  {"groupkfold": 3, "group": 4, "fold": 5, "split": 2, ...}
+  chunk 18  {"fit_transform": 2, "fit": 3, "transform": 3, ...}
+  ... 7,873 of these
+
+Across all chunks:
+  how many chunks contain each word  "the": 7,500 (common → worth little)
+                                     "groupkfold": 12 (rare → worth a lot)
+  average chunk length               (to penalize very long chunks slightly)
+```
+
+  At search time the question is tokenized the same way and each chunk is scored from these
+  counts. Rebuilding is cheap, and it can never go stale after a re-ingest.
+
+**The three retrieval modes** (`retrieve(query, k, mode=...)` in `retrieval/hybrid.py`)
+
+```
+ dense:   question → BGE-small → vector → Chroma: nearest vectors ─────────────────► top 5
+ bm25:    question → tokenize  → words  → BM25: highest keyword scores ────────────► top 5
+ hybrid:  dense top 20 ─┐
+                        ├─► Reciprocal Rank Fusion: score = Σ 1 / (60 + rank) ────► top 5
+          bm25  top 20 ─┘   (a chunk ranked high by either, or both, rises to the top)
+```
+
+- **dense**: embedding search only; matches *meaning*.
+- **bm25**: keyword search only; matches *exact words*.
+- **hybrid**: runs both, takes 20 candidates from each, and merges the two rankings. Fusion
+  uses only ranks, because a cosine similarity and a BM25 score aren't on the same scale.
+
+Step 3 measured all three: dense won (recall@5 0.601 vs. 0.553 hybrid, 0.430 BM25), because
+BM25 pulls in keyword-heavy gallery examples that push correct dense results out of the top
+5. So **the agent uses dense only** (`RETRIEVAL_MODE = "dense"` in `graph.py`). BM25 and hybrid
+stay for the evaluation and for step 6, where a reranker may let hybrid win.
 
 **Why classify before retrieving?** Retrieval doesn't use the category at all. The
 classifier is an optimization: it stops off-topic questions with one cheap call instead of
