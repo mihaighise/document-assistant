@@ -2,8 +2,16 @@
 
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 # Repository root (this file lives in src/sklearn_assistant/).
 ROOT = Path(__file__).resolve().parents[2]
+
+# Copy the variables in .env (e.g. ANTHROPIC_API_KEY) into os.environ, where the
+# Anthropic SDK looks for them. Every module imports this file, so loading here covers
+# all scripts. Variables already set in the shell win over .env (override=False), and a
+# missing .env is fine. See .env.example for the expected keys.
+load_dotenv(ROOT / ".env")
 DATA_DIR = ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"
 DOCS_DIR = RAW_DIR / "docs"            # unzipped HTML docs
@@ -23,3 +31,6 @@ EMBED_MODEL = "BAAI/bge-small-en-v1.5"  # 512-token input limit; chunker.MAX_CHA
 # Step 3: evaluation.
 EVAL_QUESTIONS_PATH = ROOT / "eval" / "retrieval_questions.jsonl"  # hand-labeled, committed
 MLFLOW_TRACKING_URI = f"sqlite:///{ROOT / 'mlflow.db'}"
+
+# Step 4: agent.
+LLM_MODEL = "claude-opus-5-5"

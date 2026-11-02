@@ -161,12 +161,51 @@ misses are mostly near-relevant gallery examples that repeat the query's keyword
 `plot_lasso_*`), and equal-weight RRF lets them push correct dense results out of the top 5.
 Weighting the fusion, and the cross-encoder reranker in step 6, are the obvious next levers.
 
+### 4. LangGraph agent
+
+```bash
+cp .env.example .env    # then put your key in .env (gitignored)
+.venv/bin/python scripts/ask.py "How do I handle class imbalance in RandomForest?"
+.venv/bin/python scripts/ask.py --check-code "How do I plot a learning curve?"
+```
+
+```mermaid
+flowchart LR
+    C[classify] -->|off_topic| D[decline]
+    C --> R[retrieve top 5] --> G[grade]
+    G -->|relevant| A[answer + citations]
+    G -->|none, ≤2 rewrites| W[rewrite query] --> R
+    G -->|none left| N[no_answer]
+    A -->|--check-code| X[run code] -->|fails, 1 fix| A
+```
+
+- **classify** labels the question (the eval categories + `off_topic`); off-topic is declined.
+- **grade** keeps only the retrieved chunks that help answer; if none do, **rewrite** turns
+  the question into docs vocabulary and searches again (at most twice).
+- **answer** uses only the kept chunks and cites them `[1]`, `[2]`. With no relevant chunks it
+  returns a fixed "not in the docs" reply instead of answering from memory.
+- **check_code** (opt-in) runs the answer's code; on failure the answer is regenerated once
+  with the traceback, and if it still fails the answer carries a warning.
+
+**Design decisions**
+
+- **Anthropic SDK directly, no LangChain wrappers.** LangGraph nodes are plain functions; two
+  calls (`structured()` for routing, `text()` for answers) cover everything. All calls use
+  `claude-opus-5-5`, with low effort for routing and medium for answers, and structured outputs
+  so routing never parses free text. Refused requests fall back server-side
+  (`fallbacks: "default"`).
+- **Dense retrieval in the agent**, since it beat hybrid on recall@5 in step 3.
+- **The code check is not a security sandbox**: a subprocess with a temp dir, stripped env
+  and timeout, running as your user. That's why it's off by default; step 8 moves it to Docker.
+- **Tests use a scripted fake LLM and retriever**, so the graph's routing is tested without
+  an API key.
+
 ## Roadmap
 
 - [x] 1. Ingest + section-based chunking
 - [x] 2. Embeddings + Chroma, BM25 + hybrid retrieval
 - [x] 3. Evaluation set (81 questions) + recall@5 / MRR, tracked in MLflow
-- [ ] 4. LangGraph agent: classify → retrieve → grade/rewrite → answer (+ code sandbox)
+- [x] 4. LangGraph agent: classify → retrieve → grade/rewrite → answer (+ code sandbox)
 - [ ] 5. Question classifier: TF-IDF + LR vs. fine-tuned BERT vs. LLM
 - [ ] 6. Fine-tuned embeddings + cross-encoder reranker
 - [ ] 7. Answer evaluation (faithfulness, correctness)
@@ -187,9 +226,14 @@ src/sklearn_assistant/
   retrieval/bm25.py    code-aware tokenizer + BM25 index
   retrieval/hybrid.py  RRF fusion -> ranked chunks
   evaluation/retrieval.py  eval set loading, recall@k / MRR scoring
+  agent/graph.py       LangGraph state machine (nodes + routing)
+  agent/prompts.py     prompts and structured-output schemas
+  agent/llm.py         Claude API wrapper
+  agent/sandbox.py     runs answer code in a subprocess
 scripts/ingest.py      step 1 entry point
 scripts/build_index.py step 2 entry point
 scripts/eval_retrieval.py  step 3 entry point (logs to MLflow)
+scripts/ask.py         step 4 entry point (ask the agent)
 eval/retrieval_questions.jsonl  hand-labeled retrieval eval set
 tests/                 pytest suite
 ```
