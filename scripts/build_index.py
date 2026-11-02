@@ -6,6 +6,8 @@ from sklearn_assistant.config import CHROMA_DIR
 from sklearn_assistant.retrieval.dense import build_index
 from sklearn_assistant.retrieval.hybrid import HybridRetriever, load_chunks
 
+# A quick visual check that the index works, not a measurement (that's step 3's job).
+# One paraphrased question and two that hinge on exact identifiers.
 SAMPLE_QUERIES = [
     "how do I handle class imbalance in RandomForest?",
     "what's the difference between fit_transform and transform?",
@@ -17,9 +19,12 @@ def main() -> None:
     """Build the vector index and print the top results for each sample query."""
     chunks = load_chunks()
     start = time.perf_counter()
+    # Only the dense index is built here. BM25 has nothing to persist; it is rebuilt in
+    # memory when HybridRetriever is created below.
     build_index(chunks)
     print(f"Indexed {len(chunks)} chunks into {CHROMA_DIR} in {time.perf_counter() - start:.0f}s")
 
+    # Passing the already-loaded chunks avoids reading the JSONL a second time.
     retriever = HybridRetriever(chunks)
     for query in SAMPLE_QUERIES:
         print(f"\n{query}")
