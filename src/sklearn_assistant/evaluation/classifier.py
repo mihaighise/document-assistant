@@ -57,3 +57,18 @@ def format_confusion(matrix: list[list[int]]) -> str:
     for c, row in zip(CATEGORIES, matrix):
         lines.append(f"{c:16}" + "".join(f"{n:9d}" for n in row))
     return "\n".join(lines)
+
+
+def print_report(summary: dict[str, float], rows: list[dict], matrix: list[list[int]]) -> None:
+    """Console version of what gets logged to MLflow."""
+    print(f"Test: {len(rows)} hand-written questions")
+    print(f"  accuracy  {summary['accuracy']:.3f}\n  macro-F1  {summary['macro_f1']:.3f}\n"
+          f"  latency   {summary['latency_ms']:.2f} ms/question\n")
+    print("F1 by category")
+    for c in CATEGORIES:
+        print(f"  {c:16} {summary[f'f1/{c}']:.3f}")
+    print("\n" + format_confusion(matrix))
+    print("\nMisclassified:")
+    for r in rows:
+        if not r["correct"]:
+            print(f"  [{r['category']} -> {r['predicted']}] {r['question']}")

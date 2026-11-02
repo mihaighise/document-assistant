@@ -38,3 +38,17 @@ def test_datasets_are_well_formed_and_disjoint():
     assert {q.category for q in test} == set(CATEGORIES)
     test_questions = {q.question.lower() for q in test}
     assert not any(q.question.lower() in test_questions for q in train)
+
+
+def test_claude_llm_cost_from_token_counts():
+    from types import SimpleNamespace
+
+    from sklearn_assistant.agent.llm import ClaudeLLM
+
+    llm = ClaudeLLM(model="claude-haiku-5-5", client=object(), fallback=False)
+    assert llm.extra == {}  # Haiku requests must not carry `fallbacks`
+    for _ in range(2):
+        llm._count(SimpleNamespace(usage=SimpleNamespace(input_tokens=500_000,
+                                                         output_tokens=100_000)))
+    # 1M input at $0.10 + 0.2M output at $0.50 per million tokens.
+    assert llm.calls == 2 and abs(llm.cost_usd() - 0.20) < 1e-9

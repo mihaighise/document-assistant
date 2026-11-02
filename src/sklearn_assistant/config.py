@@ -34,6 +34,12 @@ MLFLOW_TRACKING_URI = f"sqlite:///{ROOT / 'mlflow.db'}"
 
 # Step 4: agent.
 LLM_MODEL = "claude-opus-5-5"
+# List prices in USD per million (input, output) tokens, used to turn token counts into
+# cost. Haiku's price applies to prompts up to 100K tokens (ours are far smaller).
+PRICES_PER_MTOK = {
+    "claude-opus-5-5": (4.00, 20.00),
+    "claude-haiku-5-5": (0.10, 0.50),
+}
 
 # Step 5: question classifier.
 CLASSIFIER_DATA_DIR = ROOT / "datasets" / "classifier"           # committed
