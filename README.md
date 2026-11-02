@@ -16,6 +16,76 @@ python3.12 -m venv .venv
 .venv/bin/pytest
 ```
 
+## How it fits together
+
+```
+════════════════════ OFFLINE: build the index once (steps 1–2) ════════════════════
+
+ scikit-learn docs (HTML, v1.9.1)
+        │
+        ▼
+ ① CHUNK  (scripts/ingest.py)
+    split every page by section → 7,873 chunks
+    each chunk = { text: "Cross-validation > GroupKFold\n...", url: ".../cross_validation.html#group-k-fold" }
+        │
+        ├──────────────────────────────────┐
+        ▼                                  ▼
+ ② EMBED  (BGE-small, local)          ② TOKENIZE  (code-aware)
+    text → 384 numbers (a vector)        text → words: "groupkfold", "group", "fold", ...
+        │                                  │
+        ▼                                  ▼
+ ③ SAVE  Chroma (data/chroma/)        ③ BM25 index (in memory)
+    vectors + text + url                 keyword search
+
+═════════════════════ ONLINE: every question (steps 4–5) ═════════════════════════
+
+ "How do I keep a patient's samples in one CV fold?"
+        │
+        ▼
+ ④ CLASSIFY (Haiku) ──► off_topic? ──► "I only answer scikit-learn questions."  (stop)
+        │ howto / api / concept / ...
+        ▼
+ ⑤ RETRIEVE
+    question → BGE-small → vector → Chroma: 5 nearest chunk vectors → their TEXT
+        │
+        ▼
+ ⑥ GRADE (Opus): which of the 5 chunks actually help?
+        │ none ──► ⑦ REWRITE the query ──► back to ⑤ (max 2×) ──► still none: "not in the docs"
+        │ some
+        ▼
+ ⑧ ANSWER (Opus): reads the kept chunks' text → answer with [1][2] citations + URLs
+```
+
+The LLM never sees vectors: they are only used to *find* chunks, and the LLM reads the
+chunks' text. (Step 5 picked Haiku for ④; switching the agent from Opus to Haiku there is
+still to do.)
+
+**Why both embed and tokenize?** They are two different ways to search the same chunks:
+
+| | Embedding search (Chroma) | Keyword search (BM25) |
+|---|---|---|
+| Prepares chunks by | turning each into a vector of its *meaning* | splitting each into words (tokens) |
+| Finds | chunks that *mean* the same: "skewed classes" → `class_weight` | chunks with the same *words*: `fit_transform`, `n_jobs` |
+| Misses | exact identifiers that look alike (`fit_transform` vs. `transform`) | synonyms and paraphrases |
+
+**BM25** is a classic search-engine scoring formula. A chunk scores high when it contains the
+question's words, especially rare ones (`GroupKFold` counts for far more than "the"), with
+diminishing returns for repeats, and a small penalty for very long chunks. The tokenizer is
+"code-aware": it keeps identifiers whole and also splits them (`fit_transform` → `fit_transform`,
+`fit`, `transform`; `GroupKFold` → `groupkfold`, `group`, `fold`), so both exact and partial
+names match.
+
+**Where BM25 is used:** in `retrieve(mode="bm25")` alone, and in `mode="hybrid"`, where its
+ranking is merged with the embedding ranking (Reciprocal Rank Fusion, step 2). Step 3 measured
+all three, and plain embedding search won (recall@5 0.601 vs. 0.553 hybrid, 0.430 BM25), so
+**the agent currently uses embedding search only** (`RETRIEVAL_MODE = "dense"` in `graph.py`).
+BM25 stays in the code for the evaluation and for step 6, where a reranker may let hybrid win.
+
+**Why classify before retrieving?** Retrieval doesn't use the category at all. The
+classifier is an optimization: it stops off-topic questions with one cheap call instead of
+~5 Opus calls (search, grade, rewrite, ...) ending in "not in the docs", and it tells the
+answer step the question type (a howto gets a code example, a comparison a contrast).
+
 ## Pipeline
 
 ### 1. Ingest + section-based chunking
