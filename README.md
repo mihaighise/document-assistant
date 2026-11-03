@@ -57,8 +57,7 @@ python3.12 -m venv .venv
 ```
 
 The LLM never sees vectors: they are only used to *find* chunks, and the LLM reads the
-chunks' text. (Step 5 picked Haiku for ④; switching the agent from Opus to Haiku there is
-still to do.)
+chunks' text. ④ runs on Haiku (chosen in step 5); grade, rewrite and answer run on Opus.
 
 **Why both embed and tokenize?** They are two different ways to search the same chunks:
 
@@ -312,10 +311,11 @@ flowchart LR
 **Design decisions**
 
 - **Anthropic SDK directly, no LangChain wrappers.** LangGraph nodes are plain functions; two
-  calls (`structured()` for routing, `text()` for answers) cover everything. All calls use
-  `claude-opus-5-5`, with low effort for routing and medium for answers, and structured outputs
-  so routing never parses free text. Refused requests fall back server-side
-  (`fallbacks: "default"`).
+  calls (`structured()` for routing, `text()` for answers) cover everything. Grade, rewrite and
+  answer use `claude-opus-5-5`; classify uses `claude-haiku-5-5` since step 5 (passed in as
+  `classifier_llm`, which defaults to the main LLM). Low effort for routing, medium for answers,
+  and structured outputs so routing never parses free text. Refused Opus requests fall back
+  server-side (`fallbacks: "default"`); Haiku has no server-side fallback.
 - **Dense retrieval in the agent**, since it beat hybrid on recall@5 in step 3.
 - **The code check is not a security sandbox**: a subprocess with a temp dir, stripped env
   and timeout, running as your user. That's why it's off by default; step 8 moves it to Docker.
@@ -384,7 +384,7 @@ measured, not estimated. Questions go one at a time, as in the agent.
 |---|---|---|---|---|---|---|
 | TF-IDF + LR | 0.810 | 0.757 | 0.818 | 2 | 0.5 ms | $0 |
 | Claude Haiku 5.5 | 0.886 | **0.828** | 0.957 | 0 | 1.1 s | **$0.05** |
-| Claude Opus 5.5 (agent today) | **0.905** | 0.822 | **1.000** | 0 | 1.3 s | $2.04 |
+| Claude Opus 5.5 (agent before the switch) | **0.905** | 0.822 | **1.000** | 0 | 1.3 s | $2.04 |
 | DistilBERT (mean of 3 seeds) | 0.800 | 0.734 | 0.818 | 2–7 | 6.7 ms (CPU) | $0 |
 
 - **Haiku matches Opus at 1/40 of the cost.** Macro-F1 is a tie (0.828 vs. 0.822; one
@@ -440,7 +440,8 @@ take ~45 s on MPS; the model (256 MB) is saved to gitignored `data/models/distil
 
 **Verdict:** Claude Haiku 5.5 is the pick for the agent's classifier: Opus-level accuracy,
 no wrongly declined questions, ~$0.05 per 1k questions, nothing to retrain. BERT's speed
-(7 ms, free) doesn't help while it declines real questions.
+(7 ms, free) doesn't help while it declines real questions. The agent now classifies with
+Haiku (`CLASSIFIER_MODEL` in `config.py`, passed to `build_graph` by `scripts/ask.py`).
 
 ## Hosting on AWS (planned, step 8)
 

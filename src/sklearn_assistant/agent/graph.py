@@ -63,18 +63,23 @@ class AgentState(TypedDict, total=False):
     trace: Annotated[list[str], operator.add]
 
 
-def build_graph(llm: LLM, retriever: HybridRetriever, check_code: bool = False):
+def build_graph(llm: LLM, retriever: HybridRetriever,
+                check_code: bool = False, classifier_llm: LLM | None = None):
     """Wire the nodes into a compiled graph. Dependencies are passed in so tests can fake them."""
     # The node functions are defined inside build_graph so they can use `llm`, `retriever`
     # and `check_code` directly (closures) while keeping LangGraph's node signature,
     # which is just `node(state) -> dict`.
 
+    # Use the Classifier LLM if it exists, otherwise fall back to LLM
+    if classifier_llm is None:
+        classifier_llm = llm
+
     # ---- Nodes: each receives the full state and returns only the keys it changes ----
 
     def classify(state: AgentState) -> dict:
-        # LLM call #1 (cheap, low effort): put the question into one category.
-        result = llm.structured(prompts.CLASSIFY_SYSTEM, state["question"],
-                                prompts.Classification, effort="low")
+        # LLM call #1 (cheap, low effort): put the question into one category. -> use classifier LLM
+        result = classifier_llm.structured(prompts.CLASSIFY_SYSTEM, state["question"],
+                                           prompts.Classification, effort="low")
         # The first search uses the question as-is; rewrites happen only if it fails.
         # This first node also initializes the counters the later nodes increment.
         return {"category": result.category, "query": state["question"],
