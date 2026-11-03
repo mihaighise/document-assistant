@@ -34,6 +34,10 @@ MLFLOW_TRACKING_URI = f"sqlite:///{ROOT / 'mlflow.db'}"
 
 # Step 4: agent.
 LLM_MODEL = "claude-opus-5-5"
+
+# Step 5 found Haiku as accurate as Opus at ~1/40 of the cost
+CLASSIFIER_MODEL = "claude-haiku-5-5"
+
 # List prices in USD per million (input, output) tokens, used to turn token counts into
 # cost. Haiku's price applies to prompts up to 100K tokens (ours are far smaller).
 PRICES_PER_MTOK = {

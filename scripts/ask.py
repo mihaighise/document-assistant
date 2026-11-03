@@ -10,6 +10,7 @@ import argparse
 
 from sklearn_assistant.agent.graph import ask, build_graph
 from sklearn_assistant.agent.llm import ClaudeLLM
+from sklearn_assistant.config import CLASSIFIER_MODEL
 from sklearn_assistant.retrieval.hybrid import HybridRetriever
 
 
@@ -22,7 +23,10 @@ def main() -> None:
                              "(executes model-written code on this machine)")
     args = parser.parse_args()
 
-    graph = build_graph(ClaudeLLM(), HybridRetriever(), check_code=args.check_code)
+    classifier_llm = ClaudeLLM(model=CLASSIFIER_MODEL, fallback=False)
+
+    graph = build_graph(ClaudeLLM(), HybridRetriever(),
+                        check_code=args.check_code, classifier_llm=classifier_llm)
     state = ask(graph, args.question)
 
     print(state["answer"])
